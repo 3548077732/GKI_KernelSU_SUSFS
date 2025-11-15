@@ -4,17 +4,17 @@
 >
 > 第一次使用务必**详细阅读**以下内容，不要因为懒惰而占用他人时间！
 >
-> SUKISU，编译时你无论选择Dev或Stable，是不一样的结果，追求稳定选择Stable；
+> SUKISU，编译时的Dev/Stable，追求稳定选择Stable；
 > KSU的稳定版是最新TAG，也就是[v2.0.0](https://github.com/tiann/KernelSU/tree/v1.0.5)，但目前无法编译）
-> 目前SUKISU和官方版处于更新阶段，NEXT和MKSU更新较缓慢
 
 已知:KSU-NEXT 无ROOT是一个BUG（可能由在sukisu和next之间频繁切换导致），原因不明，可下载[v1.1.1管理器](https://github.com/KernelSU-Next/KernelSU-Next/releases/download/v1.1.1/KernelSU_Next_v1.1.1_12851-release.apk)解决
 
-
+停更？
+> susfs仓库自10/23左右停更至今，已无法适配KSU/MKSU的新版，故无法编译；而SUKISU则是自适配susfs不受影响
 
 ### 无限重启？
-1. 一加/真我/op：colorOS15魔改过f2fs，已经不兼容GKI的f2fs，除非进入rec清除Data重启
-2. 小米：少数机型因为启动引导因avb验证导致无法启动分区，需要关闭avb验证（https://magiskcn.com/disable-avb）
+1. 一加/真我/op：进入系统rec清除Data数据后重启
+2. 小米：少数机型因为启动引导因avb验证导致无法启动分区，需要关闭[avb验证](https://magiskcn.com/disable-avb)
 3. zram:一些机型或系统使用了带zram补丁的内核也可能，遇到该情况可以刷[Release](https://github.com/zzh20188/GKI_KernelSU_SUSFS/releases)中不带zram的内核，或者在编译选项中不勾选[增加更多ZRAM算法]以编译无zram的内核
 4. 其他：其他手机也可能因为相似的兼容问题，如果有可以补充。。。
 
