@@ -25,9 +25,6 @@ on:
       ksu_variant:
         required: true
         type: string
-      ksu_branch:
-        required: true
-        type: string
 
       # ==================== 可选配置 ====================
       version:
@@ -70,6 +67,10 @@ on:
         required: false
         type: string
         default: "off"
+      droidspaces_ntsync:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build-kernel:
@@ -93,7 +94,6 @@ jobs:
           echo "子版本号      : ${{ inputs.sub_level }}"
           echo "补丁级别      : ${{ inputs.os_patch_level }}"
           echo "KSU 变体      : ${{ inputs.ksu_variant }}"
-          echo "KSU 分支      : ${{ inputs.ksu_branch }}"
           echo "构建时间      : ${{ inputs.build_time }}"
           echo "SUSFS 状态    : ${{ inputs.enable_susfs }}"
           echo "ZRAM 增强     : ${{ inputs.use_zram }}"
@@ -101,6 +101,7 @@ jobs:
           echo "KPM 功能      : ${{ inputs.use_kpm }}"
           echo "Re-Kernel     : ${{ inputs.use_rekernel }}"
           echo "Droidspaces   : ${{ inputs.droidspaces }}"
+          echo "NTSync        : ${{ inputs.droidspaces_ntsync }}"
           echo "Stock Config  : 自动检测 config/stock_defconfig"
           echo "========================================"
 
@@ -128,9 +129,20 @@ jobs:
           KERNEL_ROOT="$GITHUB_WORKSPACE/$CONFIG"
           mkdir -p "$KERNEL_ROOT"
 
+          LEGACY_SUKISU_CONFIG=""
+          case "${{ inputs.ksu_variant }}" in
+            SukiSU\(*\)) LEGACY_SUKISU_CONFIG="$GITHUB_WORKSPACE/config/${{ inputs.ksu_variant }}.config" ;;
+          esac
+
+          if [ -n "$LEGACY_SUKISU_CONFIG" ] && [ ! -f "$LEGACY_SUKISU_CONFIG" ]; then
+            echo "未找到 ${{ inputs.ksu_variant }} 固定提交配置: $LEGACY_SUKISU_CONFIG" >&2
+            exit 1
+          fi
+
           cat >> $GITHUB_ENV << EOF
           CONFIG=$CONFIG
           KERNEL_ROOT=$KERNEL_ROOT
+          LEGACY_SUKISU_CONFIG=$LEGACY_SUKISU_CONFIG
           DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig
           SUSFS4KSU=$GITHUB_WORKSPACE/susfs4ksu
           KERNEL_PATCHES=$GITHUB_WORKSPACE/kernel_patches
@@ -156,6 +168,10 @@ jobs:
           if [ -f "$CONFIG_FILE" ]; then
             echo "加载配置文件: $CONFIG_FILE"
             cat "$CONFIG_FILE"
+          fi
+          if [ -n "$LEGACY_SUKISU_CONFIG" ]; then
+            echo "加载老版 SukiSU 固定提交配置: $LEGACY_SUKISU_CONFIG"
+            cat "$LEGACY_SUKISU_CONFIG"
           fi
 
       - name: 安装编译依赖
@@ -215,19 +231,29 @@ jobs:
           rm -rf AnyKernel3/.git
 
           echo "克隆 SUSFS (分支: $SUSFS_BRANCH)..."
-          if [ "${{ inputs.ksu_variant }}" == "SukiSU" ]; then
+          if [ -n "$LEGACY_SUKISU_CONFIG" ]; then
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
+          elif [ "${{ inputs.ksu_variant }}" == "SukiSU" ]; then
             if ! git clone https://github.com/ShirkNeko/susfs4ksu.git -b "$SUSFS_BRANCH" 2>/dev/null; then
               echo "ShirkNeko 仓库未找到分支 $SUSFS_BRANCH，回退到 simonpunk 原版..."
               git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
             fi
-          elif [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ]; then
-            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
           else
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
           fi
 
+          if [ -n "$LEGACY_SUKISU_CONFIG" ]; then
+            SUSFS_FIXED_COMMIT=$(grep "^${SUSFS_BRANCH}=" "$LEGACY_SUKISU_CONFIG" | cut -d'=' -f2-)
+            if [ -z "$SUSFS_FIXED_COMMIT" ]; then
+              echo "未在 $LEGACY_SUKISU_CONFIG 配置 $SUSFS_BRANCH 的固定 SUSFS 提交" >&2
+              exit 1
+            fi
+            echo "${{ inputs.ksu_variant }} 固定 SUSFS 提交: $SUSFS_FIXED_COMMIT"
+            git -C susfs4ksu checkout "$SUSFS_FIXED_COMMIT"
+          fi
+
           CONFIG_FILE="config/config"
-          if [ -f "$CONFIG_FILE" ]; then
+          if [ -z "$LEGACY_SUKISU_CONFIG" ] && [ -f "$CONFIG_FILE" ]; then
             CUSTOM_ENABLED=$(grep "^custom=" "$CONFIG_FILE" | cut -d'=' -f2)
             if [ "$CUSTOM_ENABLED" == "true" ]; then
               CUSTOM_COMMIT=$(grep "^${SUSFS_BRANCH}=" "$CONFIG_FILE" | cut -d'=' -f2)
@@ -356,40 +382,35 @@ jobs:
       - name: 确定 KernelSU 分支
         id: ksu-branch
         run: |
-          branch_input="${{ inputs.ksu_branch }}"
           variant_input="${{ inputs.ksu_variant }}"
 
-          if [ "$variant_input" = "ReSukiSU" ]; then
-            BRANCH="-s main"
-          else
-            case "$branch_input" in
-              "Stable(标准)")
-                case "$variant_input" in
-                  "Next") ;;
-                  "SukiSU") BRANCH="-s builtin" ;;
-                  "Official") BRANCH="-s main" ;;
-                  *) BRANCH="-" ;;
-                esac
-                ;;
-              "Dev(开发)")
-                case "$variant_input" in
-                  "Official") BRANCH="-s main" ;;
-                  "Next") ;;
-                  "SukiSU") BRANCH="-s builtin" ;;
-                  *) echo "未知变体: $variant_input" >&2; exit 1 ;;
-                esac
-                ;;
-              *)
-                echo "未知分支: $branch_input" >&2
-                exit 1
-                ;;
-            esac
-
-            # SukiSU 不启用 SUSFS 时强制使用 main 分支
-            if [ "$variant_input" = "SukiSU" ] && [ "${{ inputs.enable_susfs }}" = "false" ]; then
+          case "$variant_input" in
+            "Official"|"ReSukiSU")
               BRANCH="-s main"
-            fi
-          fi
+              ;;
+            "SukiSU")
+              if [ "${{ inputs.enable_susfs }}" = "false" ]; then
+                BRANCH="-s main"
+              else
+                BRANCH="-s builtin"
+              fi
+              ;;
+            "Next")
+              BRANCH=""
+              ;;
+            *)
+              if [ -z "$LEGACY_SUKISU_CONFIG" ] || [ ! -f "$LEGACY_SUKISU_CONFIG" ]; then
+                echo "未知变体: $variant_input" >&2
+                exit 1
+              fi
+              SUKISU_FIXED_COMMIT=$(grep "^sukisu=" "$LEGACY_SUKISU_CONFIG" | cut -d'=' -f2-)
+              if [ -z "$SUKISU_FIXED_COMMIT" ]; then
+                echo "未在 $LEGACY_SUKISU_CONFIG 配置 SukiSU 固定提交" >&2
+                exit 1
+              fi
+              BRANCH="-s $SUKISU_FIXED_COMMIT"
+              ;;
+          esac
 
           # 检查自定义提交 (仅对 SukiSU 生效)
           CONFIG_FILE="config/config"
@@ -430,12 +451,20 @@ jobs:
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" | bash -s dev_susfs
               ;;
             "SukiSU")
-              echo "添加 SukiSU..."
+              echo "添加 ${{ inputs.ksu_variant }}..."
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash $BRANCH
               ;;
             "ReSukiSU")
               echo "添加 ReSukiSU..."
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash $BRANCH
+              ;;
+            *)
+              if [ -z "$LEGACY_SUKISU_CONFIG" ]; then
+                echo "未知变体: ${{ inputs.ksu_variant }}" >&2
+                exit 1
+              fi
+              echo "添加 ${{ inputs.ksu_variant }}..."
+              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash $BRANCH
               ;;
           esac
 
@@ -447,7 +476,7 @@ jobs:
           fi
 
       - name: 配置 SukiSU 管理器信息
-        if: inputs.ksu_variant == 'SukiSU'
+        if: inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'SukiSU(40726)' || inputs.ksu_variant == 'SukiSU(40548)'
         working-directory: ${{ env.KERNEL_ROOT }}/KernelSU
         run: |
           KBUILD_FILE="./kernel/Kbuild"
@@ -522,8 +551,8 @@ jobs:
 
               cd ..
               ;;
-            "Next"|"SukiSU"|"ReSukiSU")
-              echo "Next/SukiSU/ReSukiSU 使用内置 SUSFS 支持"
+            "Next"|"SukiSU"|"SukiSU(40726)"|"SukiSU(40548)"|"ReSukiSU")
+              echo "Next/SukiSU/SukiSU(40726)/SukiSU(40548)/ReSukiSU 使用内置 SUSFS 支持"
               ;;
           esac
 
@@ -678,7 +707,7 @@ jobs:
             fi
           fi
 
-          if [ "${{ inputs.ksu_variant }}" == "Official" ] || [ "${{ inputs.ksu_variant }}" == "Next" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ]; then
+          if [ "${{ inputs.ksu_variant }}" == "Official" ] || [ "${{ inputs.ksu_variant }}" == "Next" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40548)" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ]; then
             # Android 12 - 5.10 修复
             if [[ "${{ inputs.android_version }}" == "android12" && "${{ inputs.kernel_version }}" == "5.10" ]]; then
               # 修复 2024-11 分支: mmap.c 调用了 vm_flags_clear()，但同分支 mm.h 未提供 helper
@@ -698,6 +727,17 @@ jobs:
               fi
               if [[ "$CURRENT_SUB" -le 148 && "${{ inputs.os_patch_level }}" != "2024-05" ]]; then
                 sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
+              fi
+              # 修复 5.15 LTS: task_mmu.c 头部 hunk 失配，导致 SUSFS 宏缺少声明
+              if grep -q 'SUSFS_IS_INODE_SUS_MAP\|SUSFS_IS_INODE_OPEN_REDIRECT' ./fs/proc/task_mmu.c && ! grep -qF '#include <linux/susfs_def.h>' ./fs/proc/task_mmu.c; then
+                if grep -qF '#include <linux/pkeys.h>' ./fs/proc/task_mmu.c; then
+                  sed -i '/#include <linux\/pkeys.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux\/susfs_def.h>\n#endif' ./fs/proc/task_mmu.c
+                elif grep -qF '#include <linux/uaccess.h>' ./fs/proc/task_mmu.c; then
+                  sed -i '/#include <linux\/uaccess.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux\/susfs_def.h>\n#endif' ./fs/proc/task_mmu.c
+                else
+                  sed -i '0,/^#include /s//#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux\/susfs_def.h>\n#endif\n&/' ./fs/proc/task_mmu.c
+                fi
+                echo "已修复 Android 13 5.15 task_mmu.c 缺少 susfs_def.h 问题"
               fi
             fi
 
@@ -743,6 +783,23 @@ jobs:
                   sed -i '/#include <linux\/sched\/sysctl.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n#include <linux\/susfs_def.h>\n#endif' ./mm/memory.c
                 fi
               fi
+              # 修复老版 SukiSU 6.6.50~6.6.58: task_mmu.c 打入 SUSFS 后使用 vma，但旧源码没有对应声明
+              if [[ -n "$LEGACY_SUKISU_CONFIG" && "$CURRENT_SUB" -ge 50 && "$CURRENT_SUB" -le 58 ]] \
+                && grep -qF 'vma = find_vma(mm, start_vaddr);' ./fs/proc/task_mmu.c; then
+                TASK_MMU_PATCH="$KERNEL_PATCHES/wild/archived/susfs_fix_patches/v2.1.0/a15-6.6/task_mmu.c.patch"
+                if [ ! -f "$TASK_MMU_PATCH" ]; then
+                  echo "::error::补丁不存在: $TASK_MMU_PATCH"
+                  exit 1
+                fi
+                cp "$TASK_MMU_PATCH" ./
+                if patch -p1 --dry-run < task_mmu.c.patch >/dev/null 2>&1; then
+                  patch -p1 --no-backup-if-mismatch < task_mmu.c.patch
+                  echo "已应用 Android 15 6.6.50~6.6.58 task_mmu.c 归档修复补丁"
+                else
+                  echo "Android 15 6.6.50~6.6.58 task_mmu.c 归档修复补丁已应用或当前上下文不匹配，跳过"
+                fi
+              fi
+
             fi
 
             # Android 16 - 6.12 修复
@@ -875,6 +932,83 @@ jobs:
           enable_config_if_defined CONFIG_IP_NF_TARGET_REJECT
 
           echo "Droidspaces 集成完成"
+
+          echo "GKI6.6 普通用户联网专用配置 (Droidspaces)"
+          # 专门处理 =n 类型的配置（安卓网络权限必须关闭）
+          disable_config() {
+            local cfg="$1"
+            if grep -q "^${cfg}=n" "$DEFCONFIG"; then
+              echo "  已禁用: $cfg"
+            elif grep -q "^${cfg}=y" "$DEFCONFIG"; then
+              sed -i "s/^${cfg}=y$/${cfg}=n/" "$DEFCONFIG"
+              echo "  已关闭: $cfg"
+            else
+              echo "# ${cfg} is not set" >> "$DEFCONFIG"
+              echo "  已添加并禁用: $cfg"
+            fi
+          }
+
+          if [[ "${{ inputs.android_version }}" == "android15" && "${{ inputs.kernel_version }}" == "6.6" ]]; then
+            # 1. 开启用户命名空间（必须）
+            # enable_config_if_defined CONFIG_USER_NS
+            # 2. 关闭安卓严格网络控制（必须）
+            disable_config CONFIG_ANDROID_PARANOID_NETWORK
+          fi
+
+      - name: 注入 NTSync 内核配置
+        if: inputs.droidspaces != 'off' && inputs.droidspaces_ntsync
+        working-directory: ${{ env.KERNEL_ROOT }}/common
+        run: |
+          set -e
+          echo "=== 开始注入 NTSync 内核补丁 ==="
+          echo "Android 版本: ${{ inputs.android_version }}"
+          echo "Kernel 版本: ${{ inputs.kernel_version }}"
+
+          case "${{ inputs.android_version }}-${{ inputs.kernel_version }}" in
+            android12-5.10)
+              NTSYNC_PATCH="ntsync_compat_android12-5.10"
+              ;;
+            android13-5.15)
+              NTSYNC_PATCH="ntsync_compat_android13-5.15"
+              ;;
+            android14-6.1)
+              NTSYNC_PATCH="ntsync_compat_android14-6.1"
+              ;;
+            android15-6.6)
+              NTSYNC_PATCH="ntsync_compat_android15-6.6"
+              ;;
+            android16-6.12)
+              NTSYNC_PATCH="ntsync_compat_android16-6.12"
+              ;;
+            *)
+              echo "::warning::NTSync: 未适配 ${{ inputs.android_version }} / ${{ inputs.kernel_version }}，跳过补丁"
+              exit 0
+              ;;
+          esac
+
+          echo "自动选择 NTSync 补丁: ${NTSYNC_PATCH}.patch"
+          wget -q "https://raw.githubusercontent.com/Goldzxcbug/Droidspaces_Kernel_patch/refs/heads/main/NTsync/ntsync_base.patch"
+          wget -q "https://raw.githubusercontent.com/Goldzxcbug/Droidspaces_Kernel_patch/refs/heads/main/NTsync/${NTSYNC_PATCH}.patch"
+
+          patch -p1 < "ntsync_base.patch"
+          patch -p1 < "${NTSYNC_PATCH}.patch"
+
+          cd ..
+
+          # 配置路径
+          CONFIG_PATH="./common/arch/arm64/configs/gki_defconfig"
+          echo "正在检查并启用 CONFIG_NTSYNC..."
+
+          # 移除未启用标记，再追加启用项，保证重复运行时保持幂等。
+          sed -i '/CONFIG_NTSYNC is not set/d' "$CONFIG_PATH"
+          if ! grep -q "^CONFIG_NTSYNC=y" "$CONFIG_PATH"; then
+            echo "CONFIG_NTSYNC=y" >> "$CONFIG_PATH"
+            echo "✅ 已成功启用 CONFIG_NTSYNC"
+          else
+            echo "✅ CONFIG_NTSYNC 已处于启用状态"
+          fi
+
+          echo "=== NTSync 补丁与配置注入完成 ==="
 
       - name: 应用 Unicode 绕过修复
         if: inputs.enable_susfs
@@ -1076,7 +1210,7 @@ jobs:
           CONFIG_TMPFS_POSIX_ACL=y
           EOF
 
-          if [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.ksu_variant }}" == "Next" ]; then
+          if [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40548)" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.ksu_variant }}" == "Next" ]; then
             if [[ "${{ inputs.use_kpm }}" == enabled* ]] || [[ "${{ inputs.use_kpm }}" == patched* ]]; then
               if ! grep -RqsE '^[[:space:]]*config[[:space:]]+KPM([[:space:]]|$)' common KernelSU 2>/dev/null; then
                 echo "错误: 已请求启用 KPM，但当前 KernelSU 代码未声明 CONFIG_KPM" >&2
@@ -1165,9 +1299,24 @@ jobs:
 
       - name: 设置自定义构建时间
         shell: bash
+        env:
+          INPUT_TIME: ${{ inputs.build_time }}
         run: |
-          INPUT_TIME="${{ inputs.build_time }}"
+          set -euo pipefail
+
           if [[ -n "$INPUT_TIME" && "$INPUT_TIME" != "N" && "$INPUT_TIME" != "n" ]]; then
+            TIME_REGEX='^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (0[1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] UTC [0-9]{4}$'
+            if [[ ! "$INPUT_TIME" =~ $TIME_REGEX ]]; then
+              echo "::warning title=构建时间格式错误::自定义构建时间必须形如 Sun Dec 01 08:10:00 UTC 2024，请删除多余前缀并使用两位日期。"
+              exit 1
+            fi
+
+            NORMALIZED_TIME="$(LC_ALL=C TZ=UTC date -u -d "$INPUT_TIME" +'%a %b %d %T UTC %Y' 2>/dev/null || true)"
+            if [[ "$NORMALIZED_TIME" != "$INPUT_TIME" ]]; then
+              echo "::warning title=构建时间无效::自定义构建时间无法解析为真实 UTC 时间，或星期与日期不匹配。"
+              exit 1
+            fi
+
             DATESTR="$INPUT_TIME"
           else
             DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"
