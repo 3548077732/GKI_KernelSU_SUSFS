@@ -79,7 +79,7 @@ jobs:
             git -C KernelSU checkout 3170a48c508f6330ea636c51835a84573fe56ef5
           elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
             echo "This is the ReSukiSU variant"
-            git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+            git clone https://github.com/Baka-SU/BakaSU.git KernelSU
           elif [ "${{ inputs.kernelsu_variant }}" == "Official" ]; then
             echo "This is the Official"
             git clone https://github.com/tiann/KernelSU.git KernelSU
@@ -155,7 +155,7 @@ jobs:
             KSUM="manager"
           elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
             echo "ReSukiSU..."
-            REPO="ReSukiSU/ReSukiSU"
+            REPO="Baka-SU/BakaSU"
             KSUM="manager"
           elif [ "${{ inputs.kernelsu_variant }}" == "Official" ]; then
             echo "KSU..."
@@ -280,11 +280,11 @@ jobs:
           done
 
           if [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
-            echo "仅保留 ReSukiSU arm64-v8a release 管理器..."
+            echo "仅保留 BakaSU arm64-v8a release 管理器..."
             find manager-artifacts -type f -name "*.apk" ! -name "*-arm64-v8a-release.apk" -delete
             find manager-artifacts -type f -name "*debug*.apk" -delete
             if ! find manager-artifacts -type f -name "*-arm64-v8a-release.apk" | grep -q .; then
-              echo "未找到 ReSukiSU arm64-v8a release 管理器。"
+              echo "未找到 BakaSU arm64-v8a release 管理器。"
               exit 1
             fi
             find manager-artifacts -type f -name "*.apk" -print
